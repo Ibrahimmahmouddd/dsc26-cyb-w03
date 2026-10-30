@@ -1,4 +1,4 @@
-"""Document access policy for Bayyina. Rules: README.md, "What to build", part 2."""
+"""Document access policy. Rules: README.md, "What to build", part 2."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -8,9 +8,9 @@ from dataclasses import dataclass, field
 class User:
     id: str
     role: str                       # partner | associate | paralegal | client | auditor
-    client_id: str | None = None    # for client users: which Bayyina client they belong to
+    client_id: str | None = None
     matters: frozenset[str] = field(default_factory=frozenset)
-    mfa: bool = False               # this session passed MFA
+    mfa: bool = False
 
 
 @dataclass(frozen=True)
@@ -18,7 +18,7 @@ class Document:
     id: str
     client_id: str
     matter_id: str
-    confidentiality: str = "normal" # "normal" or "restricted"
+    confidentiality: str = "normal"
     legal_hold: bool = False
 
 
@@ -28,11 +28,42 @@ class Decision:
     reason: str
 
 
+ROLE_ACTIONS = {
+    "partner": {"read", "comment", "upload_version", "delete", "share_external"},
+    "associate": {"read", "comment", "upload_version"},
+    "paralegal": {"read", "upload_version"},
+    "client": {"read", "comment"},
+    "auditor": set(),
+}
+ACTIONS = {"read", "comment", "upload_version", "delete", "share_external"}
+
+
+def _deny(reason: str) -> Decision:
+    return Decision(False, reason)
+
+
 def authorize(user: User | None, action: str, doc: Document) -> Decision:
-    """Evaluate the nine rules in order and return the first denial, else Decision(True, "ok")."""
-    raise NotImplementedError
+    if user is None or not user.id:
+        return _deny("unauthenticated")
+    if not isinstance(action, str) or action not in ACTIONS:
+        return _deny("unknown_action")
+    if not isinstance(user.role, str) or user.role not in ROLE_ACTIONS:
+        return _deny("unknown_role")
+    if action == "delete" and doc.legal_hold:
+        return _deny("legal_hold")
+    if action not in ROLE_ACTIONS[user.role]:
+        return _deny("role_not_permitted")
+    if user.role == "client":
+        if user.client_id is None or user.client_id != doc.client_id:
+            return _deny("tenant_mismatch")
+    if user.role in ("associate", "paralegal"):
+        if doc.matter_id not in user.matters:
+            return _deny("not_assigned")
+    normal = doc.confidentiality == "normal"
+    if user.role in ("client", "paralegal") and not normal:
+        return _deny("restricted")
+    if (not normal or action == "share_external") and user.mfa is not True:
+        return _deny("mfa_required")
+    return Decision(True, "ok")
 
 
-def visible_documents(user: User | None, docs: list[Document]) -> list[Document]:
-    """The documents `user` may read, in their original order."""
-    raise NotImplementedError
